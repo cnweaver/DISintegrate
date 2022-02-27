@@ -1,0 +1,662 @@
+#!/bin/bash
+
+check_os_arch(){
+	if [ -x /usr/bin/lsb_release ]; then
+		OS_DISTRIB=$(lsb_release -si|tr '[:upper:]' '[:lower:]')
+		OS_VERSION=`lsb_release -sr`
+	elif [ -e /etc/os-release ]; then
+		OS_DISTRIB=$(cat /etc/os-release|grep '^ID='|cut -d '=' -f 2|sed s/\"//g|tr '[:upper:]' '[:lower:]')
+		OS_VERSION=$(cat /etc/os-release|grep '^VERSION='|cut -d '=' -f 2|cut -d ' ' -f 1|sed s/\"//g)
+	elif [ -e /etc/redhat-release ]; then
+		OS_DISTRIB="centos"
+		OS_VERSION=$(cat /etc/redhat-release|sed s/\ /\\\\n/g|grep '\.')
+	else
+		OS_DISTRIB=$(uname -s|tr '[:upper:]' '[:lower:]')
+		OS_VERSION=$(uname -r)
+	fi
+	ARCH=$(uname -m)
+	OS_NAME=$(uname -s)
+
+	case $OS_DISTRIB in
+		"redhatenterpriseclient" | "redhatenterpriseserver" | "rhel" | "scientificsl" | "scientific" | "centos" | "scientificfermi" | "scientificcernslc")
+			OS_DISTRIB="RHEL"
+			OS_VERSION=$(echo "${VERSION}" | cut -d '.' -f 1)
+			;;
+		"ubuntu")
+			OS_DISTRIB="Ubuntu"
+			;;
+		"debian")
+			OS_DISTRIB="Ubuntu"
+			;;
+		"linuxmint")
+			OS_DISTRIB="Ubuntu"
+			;;
+		"freebsd")
+			OS_DISTRIB="FreeBSD"
+			OS_VERSION=$(uname -r | cut -d '.' -f 1)
+			ARCH=$(uname -p)
+			;;
+		"darwin")
+			OS_DISTRIB="OSX"
+			OS_VERSION=$(uname -r | cut -d '.' -f 1)
+			;;
+		"linux")
+			if echo $OS_VERSION | grep -q '\.el7\.\?'; then
+				OS_DISTRIB="RHEL"
+				OS_VERSION=7
+			elif echo $OS_VERSION | grep -q '\.el6\.\?'; then
+				OS_DISTRIB="RHEL"
+				OS_VERSION=6
+			elif echo $OS_VERSION | grep -q '\.el5\.\?'; then
+				OS_DISTRIB="RHEL"
+				OS_VERSION=5
+			fi
+	esac
+	OS_ARCH=${OS_DISTRIB}_${OS_VERSION}_${ARCH}
+	DYNLIB_SUFFIX="so"
+	if [ "$OS_DISTRIB" = "OSX" ]; then
+		DYNLIB_SUFFIX="dylib"
+	fi
+}
+
+check_pkgconfig(){
+	if [ "$PKG_CONFIG_FOUND" ]; then return; fi
+	echo "Looking for pkg-config..."
+	PKG_CONFIG_BIN=$(command -v pkg-config)
+	if [ "$?" -ne 0 ]; then
+		echo "Warning: pkg-config not found; you may need to specify library locations manually" 1>&2
+		unset PKG_CONFIG_FOUND
+		return
+	fi
+	echo " Found $PKG_CONFIG_BIN"
+	PKG_CONFIG_FOUND=1
+}
+
+find_package(){
+	PKG=$1
+	VAR_PREFIX=`echo $PKG | tr [:lower:] [:upper:]`
+	TMP_FOUND=`eval echo "$"${VAR_PREFIX}_FOUND`
+	if [ "$TMP_FOUND" ]; then return; fi
+    echo "Looking for $PKG..."
+	check_pkgconfig
+	if [ "$PKG_CONFIG_FOUND" = 0 ]; then return; fi
+
+	pkg-config --exists $PKG
+	if [ "$?" -ne 0 ]; then
+		echo " $PKG not found with pkg-config"
+		return
+	fi
+	if [ $# -ge 2 ]; then
+		MIN_VERSION=$2
+		pkg-config --atleast-version $MIN_VERSION $PKG
+		if [ "$?" -ne 0 ]; then
+			echo "Error: installed $PKG version ("`pkg-config --modversion $PKG`") is too old; version >=$MIN_VERSION is required" 1>&2
+			exit 1
+		fi
+	fi
+	echo " Found $PKG version `pkg-config --modversion $PKG`"
+	eval ${VAR_PREFIX}_FOUND=1
+	eval ${VAR_PREFIX}_VERSION=\"`pkg-config --modversion $PKG`\"
+	eval ${VAR_PREFIX}_CFLAGS=\"`pkg-config --cflags $PKG`\"
+	eval ${VAR_PREFIX}_LDFLAGS=\"`pkg-config --libs $PKG`\"
+	eval ${VAR_PREFIX}_INCDIR=\"`pkg-config --variable=includedir $PKG`\"
+	eval ${VAR_PREFIX}_LIBDIR=\"`pkg-config --variable=libdir $PKG`\"
+}
+
+ensure_found(){
+	PKG=$1
+	VAR_PREFIX=`echo $PKG | tr [:lower:] [:upper:]`
+	TMP_FOUND=`eval echo "$"${VAR_PREFIX}_FOUND`
+	if [ "$TMP_FOUND" ]; then return; fi
+	#not found
+	lowername=`echo $PKG | tr [A-Z] [a-z]`
+
+	TMP_INCDIR=`eval echo "$"${VAR_PREFIX}_INCDIR`
+	TMP_LIBDIR=`eval echo "$"${VAR_PREFIX}_LIBDIR`
+	if [ "$TMP_INCDIR" -a "$TMP_LIBDIR" ]; then
+		echo "Error: $PKG not found in $TMP_INCDIR and $TMP_LIBDIR or with pkg-config" 1>&2
+		echo "Please verify that the path given to --with-${lowername} is correct" 1>&2
+	else
+		echo "Error: $PKG not installed or not registered with pkg-config" 1>&2
+		echo "Please specify its location using the --${lowername}-prefix flag" 1>&2
+		echo "  or the path to its config program with --${lowername}-config if applicable" 1>&2
+	fi
+	unset TMP_INCDIR
+	unset TMP_LIBDIR
+	exit 1
+}
+
+find_lhapdf(){
+	if [ "$LHAPDF_FOUND" ]; then return; fi
+	find_package lhapdf
+
+	if [ "$LHAPDF_FOUND" ]; then return; fi
+
+	if [ "$LHAPDF_CONFIG_BIN" ]; then
+		if [ ! -x "$LHAPDF_CONFIG_BIN" ]; then
+			echo "Error: $LHAPDF_CONFIG_BIN does not exist or is not executable" 1>&2
+			return
+		fi
+	else
+		LHAPDF_CONFIG_BIN=$(command -v lhapdf-config)
+		if [ "$?" -ne 0 ]; then
+			echo "Error: lhapdf-config not found; you will need to specify library locations manually" 1>&2
+			return
+		fi
+	fi
+
+	LHAPDF_FOUND=1
+	LHAPDF_VERSION=$("${LHAPDF_CONFIG_BIN}" --version)
+	LHAPDF_CFLAGS=$("${LHAPDF_CONFIG_BIN}" --cppflags)
+	LHAPDF_LDFLAGS=$("${LHAPDF_CONFIG_BIN}" --ldflags)
+	echo " Found LHAPDF version $LHAPDF_VERSION via $LHAPDF_CONFIG_BIN"
+}
+
+fetch_lhapdf(){
+	if [ "$LHAPDF_FOUND" ]; then return; fi
+	if [ "$AUTO_FETCH" ]; then check_curl; fi
+	if [ ! "$AUTO_FETCH" ]; then return; fi
+	
+	ORIG_DIR=$(pwd)
+	DEPS_DIR=$(pwd)/deps
+
+	if [ -x "${DEPS_DIR}/bin/lhapdf-config" ]; then
+		LHAPDF_CONFIG_BIN="${DEPS_DIR}/bin/lhapdf-config"
+		echo "Trying to use locally downloaded and built LHAPDF..."
+		find_lhapdf
+		if [ "$LHAPDF_FOUND" ]; then return; fi
+	fi
+
+	echo "Will try to download and build LHAPDF..."
+	FETCH_URL="https://lhapdf.hepforge.org/downloads?f=old/lhapdf-5.9.1.tar.gz"
+	mkdir -p ${DEPS_DIR}/build
+	pushd ${DEPS_DIR}/build >/dev/null
+	echo " Fetching LHAPDF from $FETCH_URL"
+	curl -LOsS "$FETCH_URL"
+	STATUS="$?"
+	if [ "$STATUS" != 0 ]; then
+		echo "Error: Failed to download header ${HEADER} from ${FETCH_URL}"
+		popd > /dev/null
+		return
+	fi
+	tar xzf lhapdf-5.9.1.tar.gz
+	if [ "$?" != 0 ]; then
+		echo "Error: Failed to unpack LHAPDF source tarball"
+		popd > /dev/null
+		return
+	fi
+	cd lhapdf-5.9.1
+	if [ "$?" != 0 ]; then
+		echo "Error: Failed to enter LHAPDF source directory"
+		popd > /dev/null
+		return
+	fi
+	patch -p0 < "${ORIG_DIR}/resources/lhapdf_5.9.1.patch"
+	if [ "$?" != 0 ]; then
+		echo "Error: Failed to apply patch to LHAPDF source code"
+		popd > /dev/null
+		return
+	fi
+	./configure --prefix="$DEPS_DIR" --disable-pyext
+	if [ "$?" != 0 ]; then
+		echo "Error: Failed to configure LHAPDF build"
+		popd > /dev/null
+		return
+	fi
+	make
+	if [ "$?" != 0 ]; then
+		echo "Error: Failed to compile LHAPDF"
+		popd > /dev/null
+		return
+	fi
+	make install
+	if [ "$?" != 0 ]; then
+		echo "Error: Failed to install LHAPDF to $DEPS_DIR"
+		popd > /dev/null
+		return
+	fi
+	popd > /dev/null
+	LHAPDF_CONFIG_BIN="${DEPS_DIR}/bin/lhapdf-config"
+	echo "Trying to use locally downloaded and built LHAPDF..."
+	find_lhapdf
+}
+
+find_gsl(){
+	if [ "$GSL_FOUND" ]; then return; fi
+	find_package gsl
+
+	if [ "$GSL_FOUND" ]; then return; fi
+
+	if [ "$GSL_CONFIG_BIN" ]; then
+		if [ ! -x "$GSL_CONFIG_BIN" ]; then
+			echo "Error: $GSL_CONFIG_BIN does not exist or is not executable" 1>&2
+			return
+		fi
+	else
+		GSL_CONFIG_BIN=$(command -v gsl-config)
+		if [ "$?" -ne 0 ]; then
+			echo "Error: gsl-config not found; you will need to specify library locations manually" 1>&2
+			return
+		fi
+	fi
+
+	GSL_FOUND=1
+	GSL_VERSION=$("${GSL_CONFIG_BIN}" --version)
+	GSL_CFLAGS=$("${GSL_CONFIG_BIN}" --cflags)
+	GSL_LDFLAGS=$("${GSL_CONFIG_BIN}" --libs)
+	echo " Found GSL version $GSL_VERSION via $GSL_CONFIG_BIN"
+}
+
+find_cubpackpp(){
+	if [ "$CUBPACKPP_FOUND" ]; then return; fi
+	find_package cubpackpp
+
+	if [ "$CUBPACKPP_FOUND" ]; then return; fi
+
+	for GUESS_DIR in "/usr" "/usr/local"; do
+		echo "Looking for Cubpack++ in $GUESS_DIR"
+		POSSIBLE_LIBDIRS="${GUESS_DIR}/lib ${GUESS_DIR}/lib64"
+		if [ $OS_DISTRIB = "Ubuntu" ]; then
+			POSSIBLE_LIBDIRS="${POSSIBLE_LIBDIRS} /usr/lib/$(uname -i)-linux-gnu"
+		fi
+		if [ ! \( -d "$GUESS_DIR/include/Cubpack++" \
+		         -a -e "$GUESS_DIR/include/Cubpack++/cubpack.h" \) ]; then
+			# if headers are not found, this prefix doesn't work
+			continue
+		fi
+		for CUBPACKPP_LIBDIR in $POSSIBLE_LIBDIRS; do
+			if [ -d "$CUBPACKPP_LIBDIR" \
+			     -a -e "$CUBPACKPP_LIBDIR/libCubpack++.${DYNLIB_SUFFIX}" ]; then
+				CUBPACKPP_FOUND=1
+				break
+			fi
+		done
+		if [ "$CUBPACKPP_FOUND" ]; then break; fi
+	done
+	if [ ! "$CUBPACKPP_FOUND" ]; then
+		unset CUBPACKPP_LIBDIR
+		echo "Error: Cubpack++ not found; you will need to specify library locations manually" 1>&2
+		return
+	fi 
+	CUBPACKPP_INCDIR="$GUESS_DIR/include"
+	echo " Found Cubpack++ in $GUESS_DIR"
+	echo "  Cubpack++ include directory is ${CUBPACKPP_INCDIR}"
+	echo "  Cubpack++ library directory is ${CUBPACKPP_LIBDIR}"
+	CUBPACKPP_CFLAGS="-I${CUBPACKPP_INCDIR}"
+	CUBPACKPP_LDFLAGS="-L${CUBPACKPP_LIBDIR} -lCubpack++"
+}
+
+find_photospline(){
+	if [ "$PHOTOSPLINE_FOUND" ]; then return; fi
+	find_package photospline
+
+	if [ "$PHOTOSPLINE_FOUND" ]; then return; fi
+
+	if [ "$PHOTOSPLINE_CONFIG_BIN" ]; then
+		if [ ! -x "$PHOTOSPLINE_CONFIG_BIN" ]; then
+			echo "Error: $PHOTOSPLINE_CONFIG_BIN does not exist or is not executable" 1>&2
+			return
+		fi
+	else
+		PHOTOSPLINE_CONFIG_BIN=$(command -v photospline-config)
+		if [ "$?" -ne 0 ]; then
+			echo "Error: photospline-config not found; you will need to specify library locations manually" 1>&2
+			return
+		fi
+	fi
+
+	PHOTOSPLINE_FOUND=1
+	PHOTOSPLINE_VERSION=$("$PHOTOSPLINE_CONFIG_BIN" --version)
+	PHOTOSPLINE_CFLAGS=$("$PHOTOSPLINE_CONFIG_BIN" --cflags)
+	PHOTOSPLINE_LDFLAGS=$("$PHOTOSPLINE_CONFIG_BIN" --libs)
+	echo " Found Photospline version $PHOTOSPLINE_VERSION via $PHOTOSPLINE_CONFIG_BIN"
+}
+
+check_header(){
+	NAME="$1"
+	HEADER="$2"
+	EXTRA_FLAGS=""
+	if [ "$#" -gt 2 ]; then
+		EXTRA_FLAGS="$3"
+	fi
+	echo "int main(){
+#if defined __has_include
+ #if __has_include (${HEADER})
+  return 0;
+ #endif
+ return 1;
+#endif
+ return 2;
+}" > .test.cpp
+	COMPILE_RESULT=$("${CXX}" ${CXXFLAGS} ${EXTRA_FLAGS} .test.cpp -o .test 2>&1)
+	if [ "$?" != 0 ]; then
+		echo "Error: Unable to compile test program to test for availability of $HEADER header" 1>&2
+		echo " Test output: $COMPILE_RESULT"
+	fi
+	./.test
+	TEST_RESULT="$?"
+	if [ "$TEST_RESULT" = 0 ]; then
+		echo "$HEADER is available"
+		eval ${NAME}_HEADER_FOUND=1
+	elif [ "$TEST_RESULT" = 1 ]; then
+		echo "$HEADER is not available"
+	else
+		echo "Error: $CXX does not support __has_include to test for availability of $HEADER header" 1>&2
+	fi
+	rm -f .test .test.cpp
+}
+
+check_curl(){
+	if [ "$CURL_BIN_FOUND" ]; then return; fi
+	
+	if [ "$CURL_BIN" ]; then
+		if [ ! -x "$CURL_BIN" ]; then
+			echo "Warning: $CURL_BIN does not exist or is not executable; disabling automatic dependency fetching" 1>&2
+			unset CURL_BIN_FOUND
+			unset AUTO_FETCH
+			return
+		fi
+	else
+		echo "Looking for curl..."
+		CURL_BIN=$(command -v curl)
+		if [ "$?" -ne 0 ]; then
+			echo "Warning: curl not found; disabling automatic dependency fetching" 1>&2
+			unset CURL_BIN_FOUND
+			unset AUTO_FETCH
+			return
+		fi
+		echo " Found curl: $CURL_BIN"
+	fi
+	CURL_BIN_FOUND=1
+}
+
+ensure_header_found(){
+	NAME="$1"
+	HEADER="$2"
+	TMP_FOUND=`eval echo "$"${NAME}_HEADER_FOUND`
+	if [ "$TMP_FOUND" ]; then return; fi
+	
+	if [ "$AUTO_FETCH" ]; then check_curl; fi
+	if [ "$AUTO_FETCH" -a "$#" -gt 2 ]; then
+		FETCH_URL="$3"
+		HEADER_FILE=$(echo "$HEADER" | sed 's|^.\(.*\).$|\1|')
+		mkdir -p deps/include
+		if [ ! -f "deps/include/$HEADER_FILE" ]; then
+			echo " Fetching $HEADER from $FETCH_URL"
+			curl -LsS "$FETCH_URL" -o "deps/include/$HEADER_FILE"
+			STATUS="$?"
+			if [ "$STATUS" != 0 ]; then
+				echo "Error: Failed to download header ${HEADER} from ${FETCH_URL}"
+				return
+			fi
+		fi
+		if echo "CXXFLAGS" | grep -- "-I$(pwd)/deps/include"; then
+			:
+		else
+			CXXFLAGS="$CXXFLAGS -I$(pwd)/deps/include"
+		fi
+		echo "$HEADER is available in $(pwd)/deps/include"
+		eval ${NAME}_HEADER_FOUND=1
+		return
+	fi
+
+	echo "Error: Header ${HEADER} is not available" 1>&2
+	echo " Please specify its location by adding a suitable '-I' flag to CXXFLAGS" 1>&2
+	exit 1
+}
+
+
+HELP="Usage: ./configure [OPTION]... 
+
+The following options are used to control which depndencies/features are used:
+  --with-gsl [default: YES]            Use GSL for 2D integration.
+                                       This is slow but commonly available.
+  --with-cubpackpp [default: NO]       Use Cubpack++ for 2D integration.
+                                       This can be much faster than GSL.
+  --with-photospline [default: YES]    Use photospline to enable output of cross
+                                       sections as splines.
+Each --with option has a corresponding --without version which disables use of the
+dependency/feature.
+
+The following options can be used to maunally specify the 
+locations of dependencies:
+  --lhapdf-config=PROGRAM        use this gsl-config executable to 
+                                 discover LHAPDF information
+
+  --gsl-config=PROGRAM           use this gsl-config executable to 
+                                 discover GSL information
+  --gsl-prefix=DIR               use the copy of GSL in DIR
+                                 assuming headers are in DIR/include
+                                 and libraries in DIR/lib
+  --gsl-incdir=DIR               use GSL headers in DIR
+  --gsl-libdir=DIR               use GSL libraries in DIR
+
+  --cubpackpp-prefix=DIR         use the copy of Cubpack++ in DIR
+                                 assuming headers are in DIR/include
+                                 and libraries in DIR/lib
+  --cubpackpp-incdir=DIR         use Cubpack++ headers in DIR
+  --cubpackpp-libdir=DIR         use Cubpack++ libraries in DIR
+
+  --photospline-config=PROGRAM   use this photospline-config executable to 
+                                 discover photospline information
+
+Some influential environment variables:
+CC          C compiler command
+CXX         C++ compiler command
+AR          Static linker command
+LD          Dynamic linker command
+CXXFLAGS    Options for the C++ compiler
+LDFLAGS     Options for the static linker
+" #`
+
+########################################
+# Default settings
+
+if [ -z "$CC" ]; then
+	if command -v cc > /dev/null ; then
+		CC=cc
+	elif command -v gcc > /dev/null ; then
+		CC=gcc
+	elif command -v clang > /dev/null ; then
+		CC=clang
+	else
+		echo "Unable to guess the name of the C compiler, and CC is not set" 1>&2
+		echo "Please set it and re-run this script" 1>&2
+		exit 1
+	fi
+fi
+if [ -z "$CXX" ]; then
+	if command -v c++ > /dev/null ; then
+		CXX=c++
+	elif command -v g++ > /dev/null ; then
+		CXX=g++
+	elif command -v clang++ > /dev/null ; then
+		CXX=clang++
+	else
+		echo "Unable to guess the name of the C++ compiler, and CXX is not set" 1>&2
+		echo "Please set it and re-run this script" 1>&2
+		exit 1
+	fi
+fi
+AR="${AR-ar}"
+LD="${LD-ld}"
+
+USE_GSL=1
+USE_CUBPACKPP=0
+USE_PHOTOSPLINE=1
+
+AUTO_FETCH=1
+
+########################################
+# Command line argument handling 
+for var in "$@"
+do
+	if [ "$var" = "--help" -o "$var" = "-h" ]; then
+		echo "$HELP"
+		exit 0
+	fi
+
+	TMP=`echo "$var" | sed -n 's/^--lhapdf-config=\(.*\)$/\1/p'`
+	if [ "$TMP" ]; then LHAPDF_CONFIG_BIN="$TMP"; continue; fi
+
+	TMP=`echo "$var" | sed -n 's/^--gsl-prefix=\(.*\)$/\1/p'`
+		if [ "$TMP" ]; then
+		GSL_INCDIR="${TMP}/include";
+		GSL_LIBDIR="${TMP}/lib";
+	continue; fi
+
+	if [ "$var" = "--with-gsl" ]; then USE_GSL=1; continue; fi
+	if [ "$var" = "--without-gsl" ]; then USE_GSL=0; continue; fi
+
+	TMP=`echo "$var" | sed -n 's/^--gsl-config=\(.*\)$/\1/p'`
+	if [ "$TMP" ]; then GSL_CONFIG_BIN="$TMP"; continue; fi
+
+	TMP=`echo "$var" | sed -n 's/^--gsl-incdir=\(.*\)$/\1/p'`
+	if [ "$TMP" ]; then GSL_INCDIR="$TMP"; continue; fi
+	TMP=`echo "$var" | sed -n 's/^--gsl-libdir=\(.*\)$/\1/p'`
+	if [ "$TMP" ]; then GSL_LIBDIR="$TMP"; continue; fi
+
+	if [ "$var" = "--with-cubpackpp" ]; then USE_CUBPACKPP=1; continue; fi
+	if [ "$var" = "--without-cubpackpp" ]; then USE_CUBPACKPP=0; continue; fi
+
+	TMP=`echo "$var" | sed -n 's/^--cubpackpp-prefix=\(.*\)$/\1/p'`
+		if [ "$TMP" ]; then
+		CUBPACKPP_INCDIR="${TMP}/include";
+		CUBPACKPP_LIBDIR="${TMP}/lib";
+	continue; fi
+
+	TMP=`echo "$var" | sed -n 's/^--cubpackpp-incdir=\(.*\)$/\1/p'`
+	if [ "$TMP" ]; then CUBPACKPP_INCDIR="$TMP"; continue; fi
+	TMP=`echo "$var" | sed -n 's/^--cubpackpp-libdir=\(.*\)$/\1/p'`
+	if [ "$TMP" ]; then CUBPACKPP_LIBDIR="$TMP"; continue; fi
+
+	TMP=`echo "$var" | sed -n 's/^--photospline-config=\(.*\)$/\1/p'`
+	if [ "$TMP" ]; then PHOTOSPLINE_CONFIG_BIN="$TMP"; continue; fi
+
+	if [ "$var" = "--with-photospline" ]; then USE_PHOTOSPLINE=1; continue; fi
+	if [ "$var" = "--without-photospline" ]; then USE_PHOTOSPLINE=0; continue; fi
+
+	echo "configure: Unknown or malformed option '$var'" 1>&2
+	exit 1
+done
+
+if [ "$USE_GSL" = 1 -a "$USE_CUBPACKPP" = 1 ]; then
+	echo "Error: Only one 2D integration tool may be selected" 1>&2
+	echo "  Specify --without-gsl or --without-cubpackpp to disable one tool" 1>&2
+	exit 1
+fi
+if [ "$USE_GSL" = 0 -a "$USE_CUBPACKPP" = 0 ]; then
+	echo "Error: A 2D integration tool must be selected" 1>&2
+	echo "  Specify --with-gsl or --with-cubpackpp to enable one tool" 1>&2
+	exit 1
+fi
+
+########################################
+# Dependency checking
+
+echo "Using C compiler: $CC"
+echo "Using C++ compiler: $CXX"
+
+check_os_arch
+check_pkgconfig
+
+find_lhapdf
+if [ "$AUTO_FETCH" -a ! "$LHAPDF_FOUND" ]; then
+	fetch_lhapdf
+fi
+
+if [ "$USE_GSL" = 1 ]; then
+	if [ "$GSL_INCDIR" -a "$GSL_LIBDIR" ]; then
+		echo "Checking manually specified GSL..."
+		if [ -d "$GSL_INCDIR/gsl" \
+			 -a -e "$GSL_INCDIR/gsl/gsl_version.h" \
+			 -a -d "$GSL_LIBDIR" \
+			 -a -e "$GSL_LIBDIR/libgsl.a" ]; then
+			GSL_FOUND=1
+			GSL_CFLAGS="-I$GSL_INCDIR"
+			GSL_LDFLAGS="-L$GSL_LIBDIR -lgsl -lgslcblas -lm"
+		else
+			echo "Warning: manually specifed GSL not found; will attempt auto detection"
+		fi
+	fi
+	find_gsl
+fi
+
+if [ "$USE_CUBPACKPP" = 1 ]; then
+	echo "Attempting to use Cubpack++"
+	if [ "$CUBPACKPP_INCDIR" -a "$CUBPACKPP_LIBDIR" ]; then
+		echo "Checking manually specified Cubpack++..."
+		if [ -d "$CUBPACKPP_INCDIR/Cubpack++" \
+			 -a -e "$CUBPACKPP_INCDIR/Cubpack++/cubpack.h" \
+			 -a -d "$CUBPACKPP_LIBDIR" \
+			 -a -e "$CUBPACKPP_LIBDIR/libCubpack++.${DYNLIB_SUFFIX}" ]; then
+			CUBPACKPP_FOUND=1
+			CUBPACKPP_CFLAGS="-I$CUBPACKPP_INCDIR"
+			CUBPACKPP_LDFLAGS="-L$CUBPACKPP_LIBDIR -lCubpack++"
+		else
+			echo "Warning: manually specifed Cubpack++ not found; will attempt auto detection"
+		fi
+	fi
+	find_cubpackpp
+fi
+
+if [ "$USE_PHOTOSPLINE" = 1 ]; then
+	find_photospline
+	if [ ! "$PHOTOSPLINE_FOUND" ]; then
+		echo "Warning: Photospline not found; disabling spline output support"
+		USE_PHOTOSPLINE=0
+	fi
+fi
+
+ensure_found lhapdf
+if [ "$USE_GSL" = 1 ]; then
+	ensure_found gsl
+fi
+if [ "$USE_CUBPACKPP" = 1 ]; then
+	ensure_found cubpackpp
+fi
+if [ "$USE_PHOTOSPLINE" = 1 ]; then
+	ensure_found photospline
+fi
+
+check_header ADAPTIVEQUAD '"AdaptiveQuad.h"'
+check_header CLOPTIONS '"cl_options.h"'
+
+ensure_header_found ADAPTIVEQUAD '"AdaptiveQuad.h"' "https://github.com/cnweaver/AdaptiveQuad/raw/master/AdaptiveQuad.h"
+ensure_header_found CLOPTIONS '"cl_options.h"' "https://github.com/cnweaver/cl_options/raw/master/cl_options.h"
+
+########################################
+# Makefile generation
+
+echo "Generating makefile..."
+echo "# Compiler
+CC=$CC
+CXX=$CXX
+AR=$AR
+LD=$LD
+
+LHAPDF_CFLAGS=$LHAPDF_CFLAGS
+LHAPDF_LDFLAGS=$LHAPDF_LDFLAGS
+GSL_CFLAGS=$GSL_CFLAGS
+GSL_LDFLAGS=$GSL_LDFLAGS
+CUBPACKPP_CFLAGS=$CUBPACKPP_CFLAGS
+CUBPACKPP_LDFLAGS=$CUBPACKPP_LDFLAGS
+PHOTOSPLINE_CFLAGS=$PHOTOSPLINE_CFLAGS
+PHOTOSPLINE_LDFLAGS=$PHOTOSPLINE_LDFLAGS
+
+CXXFLAGS=-std=c++11 -O3 -DUSE_GSL=${USE_GSL} -DUSE_CUBPACKPP=${USE_CUBPACKPP} -DUSE_PHOTOSPLINE=${USE_PHOTOSPLINE} \
+\$(LHAPDF_CFLAGS) \$(GSL_CFLAGS) \$(CUBPACKPP_CFLAGS) \$(PHOTOSPLINE_CFLAGS) ${CXXFLAGS}
+LDFLAGS=-std=c++11 -O3 \$(LHAPDF_LDFLAGS) \$(GSL_LDFLAGS) \$(CUBPACKPP_LDFLAGS) \$(PHOTOSPLINE_LDFLAGS) ${LDFLAGS}
+" > Makefile
+
+echo '
+all : DISintegrate
+
+clean : 
+	rm -f DISintegrate
+
+DISintegrate : DISintegrate.cpp Makefile
+	$(CXX) DISintegrate.cpp -o DISintegrate $(CXXFLAGS) $(LDFLAGS)
+
+.PHONY : all clean
+' >> Makefile

@@ -1,0 +1,41 @@
+--- src/wrapacfgpg.f
++++ src/wrapacfgpg.f
+@@ -706,5 +706,5 @@
+       SUBROUTINE AFPOLIN(XA,YA,N,X,Y,DY) 
+       PARAMETER (NMAX=10) 
+-      DIMENSION XA(NMAX),YA(NMAX),C(NMAX),D(NMAX) 
++      DIMENSION XA(N),YA(N),C(N),D(N) 
+       Y=0. 
+       IF(N.GT.NMAX) RETURN
+
+--- src/wrapgrv.f
++++ src/wrapgrv.f
+@@ -161,5 +161,5 @@
+ !********************************************************************   
+       IMPLICIT DOUBLE PRECISION (A-H, O-Z) 
+-      DIMENSION ARG(5),NENT(5),ENT(10),TABLE(10) 
++      DIMENSION ARG(NARG),NENT(NARG),ENT(10),TABLE(10) 
+       DIMENSION D(5),NCOMB(5),IENT(5) 
+       KD=1 
+
+--- src/wrapgjr.f
++++ src/wrapgjr.f
+@@ -180,6 +180,6 @@
+ !! External references to CERNLIB (error handling) routines removed.
+           DOUBLE PRECISION FUNCTION LHA_DFINT(NARG,ARG,NENT,ENT,TABLE)
+-          INTEGER   NENT(9), INDEX(32)
+-          DOUBLE PRECISION ARG(9),   ENT(9),   TABLE(9), WEIGHT(32)
++          INTEGER   NENT(NARG), INDEX(32)
++          DOUBLE PRECISION ARG(NARG),   ENT(9),   TABLE(9), WEIGHT(32)
+           LHA_DFINT  =  0d0
+           IF(NARG .LT. 1  .OR.  NARG .GT. 5)  GOTO 300
+
+--- src/wraphkn.f
++++ src/wraphkn.f
+@@ -244,5 +244,5 @@
+ ! X(I) <= Y < X(I+1) BY USING A BINARY SEARCH.
+       IMPLICIT REAL*8(A-H,O-Z)
+-      DIMENSION X(117)
++      DIMENSION X(N)
+ 
+       MIN=1
