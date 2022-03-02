@@ -622,8 +622,8 @@ fi
 check_header ADAPTIVEQUAD '"AdaptiveQuad.h"'
 check_header CLOPTIONS '"cl_options.h"'
 
-ensure_header_found ADAPTIVEQUAD '"AdaptiveQuad.h"' "https://github.com/cnweaver/AdaptiveQuad/raw/master/AdaptiveQuad.h"
-ensure_header_found CLOPTIONS '"cl_options.h"' "https://github.com/cnweaver/cl_options/raw/master/cl_options.h"
+ensure_header_found ADAPTIVEQUAD '"AdaptiveQuad.h"' "https://github.com/cnweaver/AdaptiveQuad/raw/trunk/AdaptiveQuad.h"
+ensure_header_found CLOPTIONS '"cl_options.h"' "https://github.com/cnweaver/cl_options/raw/trunk/cl_options.h"
 
 ########################################
 # Makefile generation
